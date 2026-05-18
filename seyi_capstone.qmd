@@ -1,0 +1,600 @@
+---
+title: "Hybrid Work & Employee Wellbeing Analytics: Impact of Work Modality on Sick Leave Rates at Toptech Engineering"
+author: "Seyi Oladapo"
+date: today
+format:
+  html:
+    theme: flatly
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup, include=FALSE}
+pkgs <- c("tidyverse", "lubridate", "scales", "ggcorrplot",
+          "patchwork", "car", "broom", "knitr", "kableExtra", "janitor")
+invisible(lapply(pkgs, library, character.only = TRUE))
+knitr::opts_chunk$set(fig.width = 9, fig.height = 5, dpi = 150)
+```
+
+```{python setup-py, include=FALSE}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import seaborn as sns
+from scipy.stats import f_oneway, kruskal, ttest_ind
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
+import statsmodels.formula.api as smf
+import statsmodels.api as sm
+from IPython.display import display
+sns.set_theme(style="whitegrid", palette="muted")
+plt.rcParams["figure.dpi"] = 150
+```
+
+```{r load-r, include=FALSE}
+df_r <- read_csv("data/hybrid_work_sick_leave_report_top_tech.csv",
+                 col_types = cols(.default = col_character())) |>
+  clean_names() |>
+  # ⚠ Employee_Name must NOT be published — remove immediately after loading
+  select(-employee_name) |>
+  mutate(
+    date              = as.Date(date),          # "2023-01-03 00:00:00" → Date
+    sick_days         = as.numeric(sick_days),
+    headcount_month   = as.numeric(headcount_month),
+    sick_leave_rate   = as.numeric(sick_leave_rate),
+    # Create policy period variable
+    period = case_when(
+      date <  as.Date("2024-10-01") ~ "Pre-Hybrid",
+      date <= as.Date("2026-01-31") ~ "Hybrid",
+      TRUE                          ~ "Post-Hybrid"
+    ),
+    period = factor(period,
+                    levels = c("Pre-Hybrid", "Hybrid", "Post-Hybrid"),
+                    ordered = TRUE)
+  )
+```
+
+```{python load-py, include=FALSE}
+df_py = pd.read_csv("data/hybrid_work_sick_leave_report_top_tech.csv", dtype=str)
+df_py.columns = df_py.columns.str.strip()
+
+# ⚠ Remove Employee_Name — must not appear in published output
+df_py = df_py.drop(columns=[c for c in df_py.columns
+                              if "employee" in c.lower() or "name" in c.lower()])
+
+# Normalise column names
+df_py.columns = (df_py.columns.str.lower()
+                 .str.replace(r"[^\w]", "_", regex=True)
+                 .str.replace(r"_+", "_", regex=True)
+                 .str.strip("_"))
+
+# Parse date — stored as "2023-01-03 00:00:00"
+df_py["date"] = pd.to_datetime(df_py["date"].str.strip(), errors="coerce")
+
+# Numeric columns
+for col in ["sick_days", "headcount_month", "sick_leave_rate"]:
+    if col in df_py.columns:
+        df_py[col] = pd.to_numeric(
+            df_py[col].str.replace(r"[^\d.\-]", "", regex=True), errors="coerce")
+
+# Period variable
+def assign_period(d):
+    if pd.isna(d):     return np.nan
+    if d < pd.Timestamp("2024-10-01"): return "Pre-Hybrid"
+    if d <= pd.Timestamp("2026-01-31"): return "Hybrid"
+    return "Post-Hybrid"
+
+df_py["period"] = df_py["date"].apply(assign_period)
+period_order = ["Pre-Hybrid", "Hybrid", "Post-Hybrid"]
+df_py["period"] = pd.Categorical(df_py["period"], categories=period_order, ordered=True)
+```
+
+---
+
+## 1. Executive Summary
+
+> **Instructions:** Complete after your analysis. 150–200 words.
+
+**Business problem:** Toptech Engineering introduced a hybrid work policy in October 2024. A key HR question is whether this change in work modality has materially reduced employee sick leave rates — a signal for improved work-life balance and employee wellbeing — or whether other factors (department, day-of-week patterns) better explain sick leave variation.
+
+**Data collected:** 114 monthly sick leave records covering January 2023 to April 2026, drawn from the HR information system. Records cover three departments across three policy periods: Pre-Hybrid, Hybrid, and Post-Hybrid.
+
+> ⚠ **Privacy note:** The `Employee_Name` column was removed from this analysis at the data loading stage and does not appear anywhere in this document. This is essential before publication on RPubs or any public platform.
+
+**Key findings:**
+
+1. Mean sick leave rate in the Hybrid period is [X%], compared to [Y%] Pre-Hybrid — a [significant/not significant] difference (p = [value]).
+2. [Department X] shows a consistently [higher/lower] sick leave rate across all three periods.
+3. The regression model explains [R²]% of sick leave rate variance, identifying [top driver] as the primary predictor.
+
+**Recommendation:** [Specific HR policy action.]
+
+---
+
+## 2. Professional Disclosure
+
+> **Instructions:** Paste your completed Section 2 from `docs/section_a_30_marks_template.md` here.
+
+---
+
+## 3. Data Collection & Sampling
+
+> **Instructions:** Paste your completed Section 3 from `docs/section_a_30_marks_template.md` here.
+
+---
+
+## 4. Data Description
+
+::: {.panel-tabset}
+
+## R
+
+```{r desc-r}
+cat("Rows:", nrow(df_r), "| Columns:", ncol(df_r), "\n")
+cat("Date range:", format(min(df_r$date, na.rm=TRUE), "%d %b %Y"),
+    "to", format(max(df_r$date, na.rm=TRUE), "%d %b %Y"), "\n\n")
+
+df_r |>
+  count(period) |>
+  kable(caption = "Records per policy period") |>
+  kable_styling(full_width = FALSE)
+
+df_r |>
+  select(sick_days, headcount_month, sick_leave_rate) |>
+  summary() |>
+  kable(caption = "Numeric variable summaries") |>
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+```{r desc-cats-r}
+df_r |> count(department, sort=TRUE) |>
+  kable(caption = "Records by department") |>
+  kable_styling(full_width = FALSE)
+
+df_r |> count(work_mode, sort=TRUE) |>
+  kable(caption = "Records by work mode") |>
+  kable_styling(full_width = FALSE)
+```
+
+## Python
+
+```{python desc-py}
+print(f"Rows: {df_py.shape[0]} | Columns: {df_py.shape[1]}")
+print(f"Date range: {df_py['date'].min().strftime('%d %b %Y')} "
+      f"to {df_py['date'].max().strftime('%d %b %Y')}\n")
+
+display(df_py["period"].value_counts().reindex(period_order).rename("n_records").reset_index())
+display(df_py[["sick_days","headcount_month","sick_leave_rate"]].describe().round(3))
+```
+
+```{python desc-cats-py}
+print("Department breakdown:")
+display(df_py["department"].value_counts().reset_index(name="count"))
+print("\nWork mode breakdown:")
+display(df_py["work_mode"].value_counts().reset_index(name="count"))
+```
+
+:::
+
+> ⚠ **Note on Post-Hybrid window:** The Post-Hybrid period (February–April 2026) contains only approximately 3 months of data. Findings for this period should be treated as preliminary indicators, not conclusive evidence.
+
+---
+
+## 5. Technique 1 — Exploratory Data Analysis
+
+**Business justification:** Establishes the baseline sick leave profile across departments and periods, and identifies whether there are systematic day-of-week patterns that may confound the work modality analysis.
+
+::: {.panel-tabset}
+
+## R
+
+```{r eda-r}
+# Distribution of sick leave rate
+p1 <- ggplot(df_r, aes(x = sick_leave_rate)) +
+  geom_histogram(bins = 25, fill = "#2c7bb6", alpha = 0.8) +
+  labs(title = "Distribution of Monthly Sick Leave Rate",
+       x = "Sick Leave Rate", y = "Count") +
+  theme_minimal()
+
+# Sick leave rate by period
+p2 <- ggplot(df_r, aes(x = period, y = sick_leave_rate, fill = period)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(title = "Sick Leave Rate by Policy Period",
+       x = "Period", y = "Sick Leave Rate") +
+  theme_minimal()
+
+p1 / p2
+```
+
+```{r eda-summary-r}
+df_r |>
+  group_by(period) |>
+  summarise(
+    n            = n(),
+    mean_slr     = mean(sick_leave_rate, na.rm=TRUE),
+    med_slr      = median(sick_leave_rate, na.rm=TRUE),
+    sd_slr       = sd(sick_leave_rate, na.rm=TRUE),
+    mean_sick_days = mean(sick_days, na.rm=TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(across(where(is.numeric), ~round(., 4))) |>
+  kable(caption = "Sick leave summary by policy period") |>
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+## Python
+
+```{python eda-py}
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+df_py["sick_leave_rate"].hist(bins=25, ax=axes[0], color="#2c7bb6", edgecolor="white")
+axes[0].set_title("Distribution of Sick Leave Rate")
+axes[0].set_xlabel("Sick Leave Rate")
+
+sns.boxplot(data=df_py, x="period", y="sick_leave_rate",
+            order=period_order, palette="muted", ax=axes[1])
+axes[1].set_title("Sick Leave Rate by Policy Period")
+plt.tight_layout(); plt.show()
+```
+
+```{python eda-summary-py}
+summary = df_py.groupby("period", observed=True)["sick_leave_rate"].agg(
+    n="count", mean="mean", median="median", std="std"
+).round(4).reindex(period_order)
+display(summary)
+```
+
+:::
+
+> **Interpretation:** Does the box plot suggest a visible change in sick leave rate after the hybrid policy was introduced? Note the small Post-Hybrid sample size when drawing conclusions.
+
+---
+
+## 6. Technique 2 — Data Visualization
+
+**Business justification:** Time-series and department-breakdown charts translate sick leave trends into HR reporting artefacts, showing policy impact over time and highlighting which departments drive or absorb sick leave variation.
+
+::: {.panel-tabset}
+
+## R
+
+```{r viz-r}
+# Time series: monthly mean sick leave rate with period shading
+monthly_mean <- df_r |>
+  group_by(date) |>
+  summarise(mean_slr = mean(sick_leave_rate, na.rm=TRUE), .groups="drop")
+
+ggplot() +
+  annotate("rect", xmin=as.Date("2024-10-01"), xmax=as.Date("2026-01-31"),
+           ymin=-Inf, ymax=Inf, fill="#fdae61", alpha=0.25) +
+  annotate("rect", xmin=as.Date("2026-02-01"), xmax=max(df_r$date, na.rm=TRUE) + 30,
+           ymin=-Inf, ymax=Inf, fill="#1a9850", alpha=0.15) +
+  geom_line(data=monthly_mean, aes(x=date, y=mean_slr),
+            colour="#2c7bb6", linewidth=1) +
+  geom_point(data=monthly_mean, aes(x=date, y=mean_slr),
+             colour="#2c7bb6", size=2) +
+  annotate("text", x=as.Date("2025-04-01"), y=max(monthly_mean$mean_slr, na.rm=TRUE)*0.95,
+           label="Hybrid Period", colour="#b8600a", size=3.5) +
+  annotate("text", x=as.Date("2026-03-01"), y=max(monthly_mean$mean_slr, na.rm=TRUE)*0.85,
+           label="Post-\nHybrid", colour="#1a9850", size=3.5) +
+  labs(title = "Monthly Mean Sick Leave Rate Over Time",
+       subtitle = "Orange = Hybrid period | Green = Post-Hybrid (preliminary)",
+       x = "Date", y = "Mean Sick Leave Rate") +
+  theme_minimal()
+```
+
+```{r viz-dept-r}
+# Bar: mean sick leave rate by department × period
+df_r |>
+  group_by(department, period) |>
+  summarise(mean_slr = mean(sick_leave_rate, na.rm=TRUE), .groups="drop") |>
+  ggplot(aes(x = department, y = mean_slr, fill = period)) +
+  geom_col(position = "dodge") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Mean Sick Leave Rate by Department and Period",
+       x = "Department", y = "Mean Sick Leave Rate", fill = "Period") +
+  theme_minimal()
+```
+
+## Python
+
+```{python viz-py}
+monthly = df_py.groupby("date")["sick_leave_rate"].mean().reset_index()
+fig, ax = plt.subplots(figsize=(11, 4))
+
+# Shaded regions
+ax.axvspan(pd.Timestamp("2024-10-01"), pd.Timestamp("2026-01-31"),
+           alpha=0.2, color="#fdae61", label="Hybrid")
+ax.axvspan(pd.Timestamp("2026-02-01"),
+           df_py["date"].max() + pd.Timedelta(days=15),
+           alpha=0.15, color="#1a9850", label="Post-Hybrid")
+ax.plot(monthly["date"], monthly["sick_leave_rate"],
+        color="#2c7bb6", linewidth=1.5, marker="o", markersize=4)
+ax.set_title("Monthly Mean Sick Leave Rate Over Time")
+ax.set_xlabel("Date"); ax.set_ylabel("Sick Leave Rate")
+ax.legend(); plt.tight_layout(); plt.show()
+```
+
+```{python viz-dept-py}
+dept_period = (df_py.groupby(["department", "period"], observed=True)
+               ["sick_leave_rate"].mean().reset_index())
+
+fig, ax = plt.subplots(figsize=(9, 4))
+x = np.arange(df_py["department"].nunique())
+depts = df_py["department"].unique()
+width = 0.25
+colors = ["#66c2a5","#fc8d62","#8da0cb"]
+for i, per in enumerate(period_order):
+    vals = [dept_period.loc[
+        (dept_period["department"]==d) &
+        (dept_period["period"]==per), "sick_leave_rate"
+    ].values[0] if len(dept_period.loc[
+        (dept_period["department"]==d) &
+        (dept_period["period"]==per)]) > 0 else 0 for d in depts]
+    ax.bar(x + i*width, vals, width, label=per, color=colors[i])
+ax.set_xticks(x + width)
+ax.set_xticklabels(depts, rotation=10)
+ax.set_title("Mean Sick Leave Rate by Department and Period")
+ax.set_ylabel("Mean Sick Leave Rate")
+ax.legend(); plt.tight_layout(); plt.show()
+```
+
+:::
+
+> **Interpretation:** Is there a visible downward shift in sick leave rate after October 2024? Is the change consistent across departments or concentrated in one? Note explicitly that the Post-Hybrid window is too short for definitive conclusions.
+
+---
+
+## 7. Technique 3 — Hypothesis Testing
+
+**Business justification:** Formally tests whether the observed sick leave rate differences across the three policy periods are statistically meaningful — the core question of the HR policy evaluation.
+
+::: {.panel-tabset}
+
+## R
+
+```{r hyp-r}
+# ANOVA across 3 periods
+aov_per <- aov(sick_leave_rate ~ period, data = df_r)
+cat("=== ANOVA: Sick Leave Rate by Policy Period ===\n")
+summary(aov_per)
+
+eta_sq <- tidy(aov_per)$sumsq[1] / sum(tidy(aov_per)$sumsq)
+cat(sprintf("\nEta-squared: %.4f (%s effect)\n", eta_sq,
+    ifelse(eta_sq < 0.01, "negligible",
+    ifelse(eta_sq < 0.06, "small",
+    ifelse(eta_sq < 0.14, "medium", "large")))))
+
+# Tukey HSD pairwise
+tukey_per <- TukeyHSD(aov_per)
+tidy(tukey_per) |>
+  kable(digits=4, caption="Tukey HSD: Pairwise Period Comparisons") |>
+  kable_styling(bootstrap_options="striped", full_width=FALSE)
+```
+
+```{r hyp-kw-r}
+# Kruskal-Wallis robustness check
+kw <- kruskal.test(sick_leave_rate ~ period, data = df_r)
+cat(sprintf("Kruskal-Wallis: chi-sq=%.4f, p=%.4f\n", kw$statistic, kw$p.value))
+
+# Targeted: Pre-Hybrid vs Hybrid (most policy-relevant comparison)
+pre  <- df_r$sick_leave_rate[df_r$period == "Pre-Hybrid"]
+hyb  <- df_r$sick_leave_rate[df_r$period == "Hybrid"]
+t_ph <- t.test(pre, hyb, var.equal = FALSE)
+cat(sprintf("\nWelch t-test: Pre-Hybrid vs Hybrid:\n  t=%.4f, p=%.4f\n",
+            t_ph$statistic, t_ph$p.value))
+cat(sprintf("  Mean sick leave rate — Pre-Hybrid: %.4f | Hybrid: %.4f\n",
+            mean(pre, na.rm=TRUE), mean(hyb, na.rm=TRUE)))
+```
+
+## Python
+
+```{python hyp-py}
+period_groups = {p: df_py[df_py["period"]==p]["sick_leave_rate"].dropna().values
+                 for p in period_order}
+
+f_stat, p_val = f_oneway(*period_groups.values())
+print(f"=== ANOVA: Sick Leave Rate by Period ===")
+print(f"F = {f_stat:.4f}, p = {p_val:.4f}\n")
+
+tukey = pairwise_tukeyhsd(
+    endog=df_py["sick_leave_rate"].dropna(),
+    groups=df_py.loc[df_py["sick_leave_rate"].notna(), "period"]
+)
+print(tukey.summary())
+```
+
+```{python hyp-kw-py}
+h_stat, p_kw = kruskal(*period_groups.values())
+print(f"\nKruskal-Wallis: H={h_stat:.4f}, p={p_kw:.4f}")
+
+t_stat, p_t = ttest_ind(period_groups["Pre-Hybrid"], period_groups["Hybrid"],
+                         equal_var=False)
+print(f"\nWelch t-test (Pre-Hybrid vs Hybrid):")
+print(f"  t={t_stat:.4f}, p={p_t:.4f}")
+print(f"  Mean Pre-Hybrid: {period_groups['Pre-Hybrid'].mean():.4f} | "
+      f"Hybrid: {period_groups['Hybrid'].mean():.4f}")
+```
+
+:::
+
+> **Interpretation:** State H₀ ("There is no significant difference in mean sick leave rate across the three policy periods") and H₁. Report the ANOVA F-stat and p-value, and the most policy-relevant pairwise comparison (Pre-Hybrid vs Hybrid). Qualify Post-Hybrid results explicitly given the small sample size.
+
+---
+
+## 8. Technique 4 — Correlation Analysis
+
+**Business justification:** Before building the regression, this section identifies which variables (headcount, day of week, department) are most associated with sick leave rate, and whether work mode directly correlates with leave behaviour.
+
+::: {.panel-tabset}
+
+## R
+
+```{r corr-r}
+# Encode work_mode and department numerically for correlation matrix
+corr_data_r <- df_r |>
+  mutate(
+    wm_num   = as.numeric(factor(work_mode)),
+    dept_num = as.numeric(factor(department)),
+    per_num  = as.numeric(period)
+  ) |>
+  select(sick_leave_rate, sick_days, headcount_month,
+         wm_num, dept_num, per_num) |>
+  drop_na()
+
+cor_mat <- cor(corr_data_r, method = "pearson")
+
+ggcorrplot(cor_mat, method = "circle", type = "lower",
+           lab = TRUE, lab_size = 3.5,
+           colors = c("#d73027", "white", "#1a9850"),
+           title = "Pearson Correlation — Sick Leave Dataset Variables",
+           ggtheme = theme_minimal(base_size = 10))
+```
+
+```{r corr-table-r}
+as.data.frame(cor_mat) |>
+  rownames_to_column("Variable") |>
+  select(Variable, sick_leave_rate) |>
+  filter(Variable != "sick_leave_rate") |>
+  arrange(desc(abs(sick_leave_rate))) |>
+  rename(r_with_sick_leave_rate = sick_leave_rate) |>
+  kable(digits=4, caption="Correlation with Sick Leave Rate") |>
+  kable_styling(full_width=FALSE)
+```
+
+## Python
+
+```{python corr-py}
+corr_py = df_py.copy()
+corr_py["wm_num"]   = pd.factorize(corr_py["work_mode"])[0]
+corr_py["dept_num"] = pd.factorize(corr_py["department"])[0]
+corr_py["per_num"]  = pd.Categorical(
+    corr_py["period"], categories=period_order, ordered=True).codes
+
+num_cols = ["sick_leave_rate","sick_days","headcount_month",
+            "wm_num","dept_num","per_num"]
+corr_data = corr_py[num_cols].dropna()
+corr_mat  = corr_data.corr(method="pearson")
+
+fig, ax = plt.subplots(figsize=(7, 5))
+mask = np.triu(np.ones_like(corr_mat, dtype=bool))
+sns.heatmap(corr_mat, mask=mask, annot=True, fmt=".2f",
+            cmap="RdYlGn", center=0, linewidths=0.5, ax=ax)
+ax.set_title("Pearson Correlation — Sick Leave Variables")
+plt.tight_layout(); plt.show()
+
+print("\nCorrelation with sick_leave_rate:")
+print(corr_mat["sick_leave_rate"].drop("sick_leave_rate")
+      .sort_values(key=abs, ascending=False).round(4))
+```
+
+:::
+
+> **Interpretation:** Does the work mode (numerically encoded) show any linear association with sick leave rate? Is the relationship stronger for period (Pre/Hybrid/Post) than for raw work mode? This informs whether work modality or broader temporal trends better explain sick leave variation.
+
+---
+
+## 9. Technique 5 — Multiple Regression
+
+**Business justification:** Produces a sick leave rate prediction model, controlling for department, headcount, and work mode simultaneously — isolating the independent contribution of the hybrid policy while accounting for confounders.
+
+::: {.panel-tabset}
+
+## R
+
+```{r reg-r}
+reg_data <- df_r |>
+  mutate(
+    period_f   = factor(period, levels=c("Pre-Hybrid","Hybrid","Post-Hybrid")),
+    dept_f     = factor(department),
+    work_mode_f = factor(work_mode)
+  ) |>
+  select(sick_leave_rate, sick_days, headcount_month,
+         period_f, dept_f, work_mode_f) |>
+  drop_na()
+
+model <- lm(sick_leave_rate ~ period_f + dept_f + headcount_month + work_mode_f,
+            data = reg_data)
+cat("=== Regression: Sick Leave Rate ===\n")
+summary(model)
+```
+
+```{r reg-table-r}
+tidy(model, conf.int=TRUE) |>
+  mutate(across(where(is.numeric), ~round(., 4))) |>
+  kable(caption="Regression coefficients — sick leave rate model") |>
+  kable_styling(bootstrap_options="striped", full_width=FALSE)
+
+glance(model) |>
+  select(r.squared, adj.r.squared, p.value, AIC) |>
+  mutate(across(everything(), ~round(., 4))) |>
+  kable(caption="Model fit statistics") |>
+  kable_styling(full_width=FALSE)
+```
+
+```{r reg-diag-r}
+par(mfrow = c(2, 2))
+plot(model, which = 1:4, pch = 16, cex = 0.6)
+par(mfrow = c(1, 1))
+```
+
+## Python
+
+```{python reg-py}
+reg_py = df_py[["sick_leave_rate","sick_days","headcount_month",
+                "period","department","work_mode"]].dropna()
+
+model_py = smf.ols(
+    "sick_leave_rate ~ C(period) + C(department) + headcount_month + C(work_mode)",
+    data=reg_py
+).fit()
+print(model_py.summary())
+```
+
+```{python reg-diag-py}
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+axes[0].scatter(model_py.fittedvalues, model_py.resid, alpha=0.5, s=20)
+axes[0].axhline(0, color="red", linestyle="--")
+axes[0].set_xlabel("Fitted values"); axes[0].set_ylabel("Residuals")
+axes[0].set_title("Residuals vs Fitted")
+
+sm.qqplot(model_py.resid, line="s", ax=axes[1], alpha=0.5)
+axes[1].set_title("Q-Q Plot of Residuals")
+plt.tight_layout(); plt.show()
+print(f"\nAdj. R²: {model_py.rsquared_adj:.4f} | F p-value: {model_py.f_pvalue:.6f}")
+```
+
+:::
+
+> **Interpretation:** For each significant coefficient, write one business sentence. Example: "Employees in the Hybrid period show a sick leave rate [X] points lower than in the Pre-Hybrid period (β = −X, p < 0.05), after controlling for department and headcount — supporting continuation of the hybrid policy."
+
+---
+
+## 10. Integrated Findings
+
+> Write 150–200 words connecting the five analyses into one coherent narrative and a single prioritized recommendation.
+
+---
+
+## 11. Limitations & Further Work
+
+- **Small Post-Hybrid window:** Only 3 months of post-February 2026 data are available. The hypothesis test and regression coefficient for this period should be treated as directional indicators only. A 12-month post-implementation review is recommended before drawing policy conclusions.
+- **Privacy:** Employee names were removed at data loading. No personally identifiable information appears in this document. However, confirm that the remaining variables (department + date + work mode) do not in combination re-identify individuals in small teams.
+- **Confounders:** External factors — flu season cycles, public health events — may drive sick leave patterns independently of work mode. Including a seasonal component (month indicator) would reduce omitted-variable bias.
+- **Future work:** Link sick leave data to productivity metrics and absenteeism costs to quantify the return on investment of the hybrid policy in financial terms.
+
+---
+
+## References
+
+> *(Complete in APA format)*
+
+---
+
+## Appendix: AI Usage Statement
+
+> *(One paragraph describing AI assistance and independent judgement.)*
