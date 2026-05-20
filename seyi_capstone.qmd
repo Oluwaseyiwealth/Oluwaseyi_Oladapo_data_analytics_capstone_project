@@ -159,7 +159,7 @@ df_py = df_py[df_py["sick_leave_rate"].notna()].copy()
 
 **Business problem:** The engineering firm introduced a hybrid work policy in October 2024. A key HR question is whether this change in work modality has materially reduced employee sick leave rates — a signal for improved work-life balance and employee wellbeing — or whether other factors (department, day-of-week patterns) better explain sick leave variation.
 
-**Data collected:** 114 monthly sick leave records covering January 2023 to April 2026, drawn from the HR information system. Records cover three departments across three policy periods: Pre-Hybrid, Hybrid, and Post-Hybrid.
+**Data collected:** 114 monthly sick leave records covering January 2023 to April 2026, drawn from the HR information system. Records cover 18 departments across three policy periods: Pre-Hybrid, Hybrid, and Post-Hybrid.
 
 > ⚠ **Privacy note:** The `Employee_Name` column was removed from this analysis at the data loading stage and does not appear anywhere in this document. This is essential before publication on RPubs or any public platform.
 
