@@ -16,7 +16,7 @@ execute:
 
 ```{r setup, include=FALSE}
 if (requireNamespace("reticulate", quietly = TRUE)) {
-  venv_python <- "/Users/user/Documents/LandMan/UA High/LBA -EMBA -Nomso/.venv/bin/python"
+  venv_python <- ".venv/bin/python"
   if (file.exists(venv_python)) {
     reticulate::use_python(venv_python, required = FALSE)
   }
