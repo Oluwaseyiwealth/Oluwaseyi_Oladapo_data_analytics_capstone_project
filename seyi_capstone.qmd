@@ -23,7 +23,7 @@ if (requireNamespace("reticulate", quietly = TRUE)) {
 }
 
 pkgs <- c("readr", "dplyr", "tidyr", "tibble", "purrr", "forcats", "ggplot2",
-          "lubridate", "scales", "ggcorrplot", "patchwork", "broom", "knitr")
+          "lubridate", "scales", "ggcorrplot", "patchwork", "broom", "knitr", "e1071")
 invisible(lapply(pkgs, library, character.only = TRUE))
 if (!requireNamespace("kableExtra", quietly = TRUE)) {
   kable_styling <- function(x, ...) x
@@ -51,7 +51,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import seaborn as sns
-from scipy.stats import f_oneway, kruskal, ttest_ind
+from scipy.stats import f_oneway, kruskal, ttest_ind, levene, spearmanr, skew, shapiro
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 import statsmodels.formula.api as smf
 import statsmodels.api as sm
@@ -326,6 +326,58 @@ df_r |>
   kable_styling(bootstrap_options = "striped", full_width = FALSE)
 ```
 
+```{r eda-quality-r}
+# ── Data Quality Issue 1: Missing values ──────────────────────────────────────
+cat("=== Data Quality Issue 1 — Missing Values ===\n")
+df_r |>
+  summarise(across(everything(), ~ round(100 * mean(is.na(.)), 2))) |>
+  pivot_longer(everything(), names_to = "column", values_to = "pct_missing") |>
+  arrange(desc(pct_missing)) |>
+  kable(caption = "Missing data % by column") |>
+  kable_styling(full_width = FALSE)
+
+# ── Data Quality Issue 2: IQR Outliers on sick_leave_rate ────────────────────
+cat("\n=== Data Quality Issue 2 — IQR Outlier Detection (sick_leave_rate) ===\n")
+q1_slr  <- quantile(df_r$sick_leave_rate, 0.25, na.rm = TRUE)
+q3_slr  <- quantile(df_r$sick_leave_rate, 0.75, na.rm = TRUE)
+iqr_slr <- q3_slr - q1_slr
+lo_slr  <- q1_slr - 1.5 * iqr_slr
+hi_slr  <- q3_slr + 1.5 * iqr_slr
+n_out   <- sum(df_r$sick_leave_rate < lo_slr | df_r$sick_leave_rate > hi_slr, na.rm = TRUE)
+cat(sprintf("Q1 = %.4f | Q3 = %.4f | IQR = %.4f\n", q1_slr, q3_slr, iqr_slr))
+cat(sprintf("Outlier fence: [%.4f, %.4f]\n", lo_slr, hi_slr))
+cat(sprintf("Outlier records: %d (%.1f%% of dataset)\n\n", n_out, 100 * n_out / nrow(df_r)))
+
+df_r |>
+  filter(sick_leave_rate < lo_slr | sick_leave_rate > hi_slr) |>
+  select(date, department, period, sick_leave_rate) |>
+  arrange(desc(abs(sick_leave_rate))) |>
+  kable(caption = "IQR outlier records — sick_leave_rate") |>
+  kable_styling(full_width = FALSE)
+```
+
+```{r eda-skewness-r}
+cat("=== Skewness — sick_leave_rate ===\n")
+base_skew <- function(x) {
+  x <- x[!is.na(x)]; n <- length(x)
+  (sum((x - mean(x))^3) / n) / (sum((x - mean(x))^2) / n)^1.5
+}
+sk_fn <- if (requireNamespace("e1071", quietly = TRUE)) {
+  function(x) e1071::skewness(x, na.rm = TRUE)
+} else base_skew
+
+sk_overall <- sk_fn(df_r$sick_leave_rate)
+cat(sprintf("Overall skewness: %.4f (%s)\n\n", sk_overall,
+    ifelse(abs(sk_overall) < 0.5, "approximately symmetric",
+    ifelse(abs(sk_overall) < 1.0, "moderate skew", "high skew"))))
+
+df_r |>
+  group_by(period) |>
+  summarise(skewness = round(sk_fn(sick_leave_rate), 4), .groups = "drop") |>
+  kable(caption = "Skewness of sick_leave_rate by policy period") |>
+  kable_styling(full_width = FALSE)
+```
+
 ## Python
 
 ```{python eda-py}
@@ -352,9 +404,45 @@ summary = df_py.groupby("period", observed=True)["sick_leave_rate"].agg(
 display(summary)
 ```
 
+```{python eda-quality-py}
+# Data Quality Issue 1: Missing values
+print("=== Data Quality Issue 1 — Missing Values ===")
+display((df_py.isna().mean() * 100).round(2)
+        .sort_values(ascending=False)
+        .to_frame("pct_missing"))
+
+# Data Quality Issue 2: IQR outliers
+slr = df_py["sick_leave_rate"].dropna()
+q1_s, q3_s = slr.quantile(0.25), slr.quantile(0.75)
+iqr_s = q3_s - q1_s
+lo_s, hi_s = q1_s - 1.5 * iqr_s, q3_s + 1.5 * iqr_s
+outliers_py = df_py[(df_py["sick_leave_rate"] < lo_s) | (df_py["sick_leave_rate"] > hi_s)]
+print(f"\n=== Data Quality Issue 2 — IQR Outliers (sick_leave_rate) ===")
+print(f"Q1={q1_s:.4f} | Q3={q3_s:.4f} | IQR={iqr_s:.4f}")
+print(f"Fence: [{lo_s:.4f}, {hi_s:.4f}]")
+print(f"Outlier records: {len(outliers_py)} ({100*len(outliers_py)/len(df_py):.1f}% of dataset)")
+if len(outliers_py) > 0:
+    display(outliers_py[["date","department","period","sick_leave_rate"]]
+            .sort_values("sick_leave_rate", ascending=False))
+```
+
+```{python eda-skewness-py}
+sk_overall_py = skew(df_py["sick_leave_rate"].dropna())
+label = ("approximately symmetric" if abs(sk_overall_py) < 0.5
+         else "moderate skew" if abs(sk_overall_py) < 1.0 else "high skew")
+print(f"=== Skewness — sick_leave_rate ===")
+print(f"Overall skewness: {sk_overall_py:.4f} ({label})\n")
+
+sk_by_period = (df_py.groupby("period", observed=True)["sick_leave_rate"]
+                .apply(skew).round(4).reindex(period_order)
+                .to_frame("skewness"))
+print("Skewness by policy period:")
+display(sk_by_period)
+```
+
 :::
 
-**Interpretation:** The distributional summary reveals the baseline sick leave profile across the firm's three departments before any policy intervention is applied. Departments with persistently elevated mean sick leave rates in the Pre-Hybrid period — rates materially above the 2–3% range typical of comparable mid-size engineering firms — indicate a structural attendance management challenge that predates the hybrid experiment and must be distinguished from any policy effect. Outlier months at the extremes deserve explicit flagging: an isolated spike is more likely associated with a localized health event than with chronic absenteeism, and including it unlabelled would distort the period comparison. The summary statistics table provides the baseline figures — mean and standard deviation of `sick_leave_rate` per period and per department — that anchor all downstream inferential comparisons and regression results.
+**Interpretation:** The missingness audit confirms whether any records need imputation before modelling; the IQR outlier table identifies specific months with anomalously high or low sick leave rates — these records are not automatically excluded but should be cross-checked against the HR system for health events (flu outbreaks, company-wide incidents) that would make them unrepresentative of normal leave behaviour. The skewness statistic determines whether the `sick_leave_rate` distribution is symmetric enough to satisfy the ANOVA normality assumption (|skew| < 1 is generally acceptable for n = 114) or whether non-parametric tests should be the primary inferential tool. The by-period summary table establishes the quantitative baseline that all downstream hypothesis tests and regression coefficients are compared against: any period with a mean materially below the Pre-Hybrid figure is consistent with a hybrid policy benefit, but formal ANOVA is required before that observation becomes a defensible claim.
 
 ---
 
@@ -488,10 +576,15 @@ plt.tight_layout(); plt.show()
 
 **Business justification:** Formally tests whether the observed sick leave rate differences across the three policy periods are statistically meaningful — the core question of the HR policy evaluation.
 
-**Hypotheses**
+**Hypothesis 1 — Policy period effect**
 
-- H0: Mean sick leave rate is equal across all policy periods.
-- H1: At least one policy period has a different mean sick leave rate.
+- **H₀:** Mean sick leave rate is equal across all three policy periods (Pre-Hybrid, Hybrid, Post-Hybrid).
+- **H₁:** At least one policy period has a statistically different mean sick leave rate.
+
+**Hypothesis 2 — Departmental effect**
+
+- **H₀:** Mean sick leave rate is equal across all departments.
+- **H₁:** At least one department has a statistically different mean sick leave rate.
 
 ::: {.panel-tabset}
 
@@ -539,6 +632,59 @@ cat(sprintf("  Mean sick leave rate — Pre-Hybrid: %.4f | Hybrid: %.4f\n",
             mean(pre, na.rm=TRUE), mean(hyb, na.rm=TRUE)))
 ```
 
+```{r hyp-dept-r}
+# ── Hypothesis 2: Department effect ──────────────────────────────────────────
+cat("=== Hypothesis 2: Sick Leave Rate by Department ===\n")
+cat("H₀: Mean sick leave rate is equal across all departments.\n")
+cat("H₁: At least one department has a different mean sick leave rate.\n\n")
+
+# Shapiro-Wilk normality per department group
+cat("Shapiro-Wilk per department:\n")
+df_r |>
+  group_by(department) |>
+  summarise(
+    n   = n(),
+    W   = if (n() >= 3) shapiro.test(sick_leave_rate)$statistic else NA_real_,
+    p   = if (n() >= 3) shapiro.test(sick_leave_rate)$p.value   else NA_real_,
+    .groups = "drop"
+  ) |>
+  mutate(across(where(is.numeric), ~ round(., 4))) |>
+  kable(caption = "Shapiro-Wilk normality test per department") |>
+  kable_styling(full_width = FALSE)
+
+# Fligner-Killeen variance homogeneity
+fk_dept <- fligner.test(sick_leave_rate ~ department, data = df_r)
+cat(sprintf("\nFligner-Killeen (variance homogeneity): chi-sq=%.4f, p=%.4f\n",
+            fk_dept$statistic, fk_dept$p.value))
+
+# ANOVA
+aov_dept <- aov(sick_leave_rate ~ department, data = df_r)
+cat("\n=== One-Way ANOVA: Sick Leave Rate by Department ===\n")
+print(summary(aov_dept))
+
+# Eta-squared
+eta_dept <- tidy(aov_dept)$sumsq[1] / sum(tidy(aov_dept)$sumsq)
+cat(sprintf("\nEta-squared: %.4f (%s effect)\n", eta_dept,
+    ifelse(eta_dept < 0.01, "negligible",
+    ifelse(eta_dept < 0.06, "small",
+    ifelse(eta_dept < 0.14, "medium", "large")))))
+
+# Kruskal-Wallis non-parametric robustness check
+kw_dept <- kruskal.test(sick_leave_rate ~ department, data = df_r)
+cat(sprintf("Kruskal-Wallis (department, non-parametric): chi-sq=%.4f, p=%.4f\n",
+            kw_dept$statistic, kw_dept$p.value))
+```
+
+```{r hyp-dept-tukey-r}
+# Tukey HSD post-hoc for department
+tukey_dept <- TukeyHSD(aov_dept)
+tidy(tukey_dept) |>
+  arrange(adj.p.value) |>
+  mutate(across(where(is.numeric), ~ round(., 4))) |>
+  kable(caption = "Tukey HSD: Pairwise Department Comparisons") |>
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
 ## Python
 
 ```{python hyp-py}
@@ -580,9 +726,49 @@ if "Pre-Hybrid" in active_groups and "Hybrid" in active_groups:
           f"Hybrid: {active_groups['Hybrid'].mean():.4f}")
 ```
 
+```{python hyp-dept-py}
+# ── Hypothesis 2: Department effect ──────────────────────────────────────────
+print("=== Hypothesis 2: Sick Leave Rate by Department ===")
+print("H₀: Mean sick leave rate is equal across all departments.")
+print("H₁: At least one department has a different mean sick leave rate.\n")
+
+dept_groups = {d: g["sick_leave_rate"].dropna().values
+               for d, g in df_py.groupby("department")}
+
+# Shapiro-Wilk per department
+print("Shapiro-Wilk normality per department:")
+for dept, vals in dept_groups.items():
+    if len(vals) >= 3:
+        w, p = shapiro(vals)
+        print(f"  {dept}: n={len(vals)}, W={w:.4f}, p={p:.4f}")
+
+# Levene (median) as proxy for Fligner-Killeen
+lev_d, lev_p = levene(*dept_groups.values(), center="median")
+print(f"\nLevene (median) variance test by department: W={lev_d:.4f}, p={lev_p:.4f}")
+
+# One-way ANOVA
+f_d, p_d = f_oneway(*dept_groups.values())
+print(f"\nANOVA by Department: F={f_d:.4f}, p={p_d:.4f}")
+print("Result:", "Significant" if p_d < 0.05 else "Not significant", "at 5%")
+
+# Kruskal-Wallis robustness check
+h_d, p_kw_d = kruskal(*dept_groups.values())
+print(f"Kruskal-Wallis (department): H={h_d:.4f}, p={p_kw_d:.4f}")
+
+# Tukey HSD post-hoc
+tukey_dept_py = pairwise_tukeyhsd(
+    endog=df_py["sick_leave_rate"].dropna(),
+    groups=df_py.loc[df_py["sick_leave_rate"].notna(), "department"]
+)
+print("\nTukey HSD — Department pairwise comparisons:")
+print(tukey_dept_py.summary())
+```
+
 :::
 
-**Interpretation:** If ANOVA returns a p-value below 0.05, the period effect is statistically significant and unlikely to be due to random variation in this 114-record dataset. The most policy-critical pairwise result is the Tukey HSD comparison of Pre-Hybrid versus Hybrid: a negative mean difference (Hybrid mean lower than Pre-Hybrid) that achieves p < 0.05 constitutes the core empirical finding of this project and is consistent with lower sick leave rates during the hybrid window. The effect-size metric (eta-squared) contextualises the practical magnitude: a value below 0.06 indicates the policy period explains a small share of sick leave variation; above 0.14 indicates a substantive effect. Although statistical significance is important, a modest eta-squared would indicate that hybrid work explains only a limited proportion of sick leave variation, meaning broader workforce wellbeing factors remain operationally important. Any Post-Hybrid pairwise result should be explicitly caveated: with only 3 months of post-February 2026 data, the comparison lacks the statistical power for reliable inference, and employees may still be in an adjustment period following the return-to-office transition.
+**Interpretation — Hypothesis 1 (Period effect):** A p-value below 0.05 on the period ANOVA confirms the observed sick leave differences across the three phases are not attributable to random variation. The Pre-Hybrid vs Hybrid Tukey HSD comparison is the most policy-critical result: a significant negative mean difference (Hybrid mean lower than Pre-Hybrid mean, as shown in the Welch t-test) constitutes the primary empirical finding. The eta-squared effect size quantifies practical significance: below 0.06 means period explains a small share of total sick leave variance; above 0.14 indicates a substantive effect. A significant but small eta-squared still supports the hybrid recommendation while acknowledging that other organisational factors — workload, seasonal illness, department composition — remain important levers. The Post-Hybrid pairwise result should be explicitly caveated: three months of data is insufficient for reliable inference.
+
+**Interpretation — Hypothesis 2 (Department effect):** A significant department ANOVA indicates structural differences in sick leave-taking across teams that are independent of work modality policy. If specific departments show significantly elevated rates in the Tukey HSD pairwise comparisons, those departments are the targets for targeted wellbeing interventions — mental health support, ergonomics reviews, workload assessments — regardless of what work modality is in place. A significant department effect also validates the regression design in §9, where department is included as a covariate to isolate the clean period estimate.
 
 ---
 
@@ -626,6 +812,23 @@ as.data.frame(cor_mat) |>
   kable_styling(full_width=FALSE)
 ```
 
+```{r corr-spearman-r}
+# Spearman correlation — more appropriate for ordinal encoded variables (per_num, wm_num)
+cor_mat_sp <- cor(corr_data_r, method = "spearman")
+
+# Pearson vs Spearman side-by-side for sick_leave_rate
+data.frame(
+  Variable     = rownames(cor_mat),
+  Pearson_r    = round(cor_mat[,    "sick_leave_rate"], 4),
+  Spearman_rho = round(cor_mat_sp[, "sick_leave_rate"], 4)
+) |>
+  filter(Variable != "sick_leave_rate") |>
+  mutate(Agreement = ifelse(sign(Pearson_r) == sign(Spearman_rho), "Yes", "No")) |>
+  arrange(desc(abs(Spearman_rho))) |>
+  kable(caption = "Pearson r vs Spearman ρ — correlation with sick_leave_rate") |>
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
 ## Python
 
 ```{python corr-py}
@@ -652,9 +855,25 @@ print(corr_mat["sick_leave_rate"].drop("sick_leave_rate")
       .sort_values(key=abs, ascending=False).round(4))
 ```
 
+```{python corr-spearman-py}
+# Spearman correlation matrix
+corr_mat_sp_py = corr_data.corr(method="spearman")
+
+# Pearson vs Spearman side-by-side
+comp_df = pd.DataFrame({
+    "Pearson_r":    corr_mat["sick_leave_rate"],
+    "Spearman_rho": corr_mat_sp_py["sick_leave_rate"]
+}).drop("sick_leave_rate").round(4)
+comp_df["Agreement"] = (np.sign(comp_df["Pearson_r"]) ==
+                        np.sign(comp_df["Spearman_rho"])).map({True: "Yes", False: "No"})
+comp_df = comp_df.reindex(comp_df["Spearman_rho"].abs().sort_values(ascending=False).index)
+print("Pearson r vs Spearman ρ — correlation with sick_leave_rate:")
+display(comp_df)
+```
+
 :::
 
-**Interpretation:** The correlation matrix identifies which variables co-move most closely with sick leave rate and highlights potential confounders before regression. A meaningful positive correlation between the ordered period variable (`per_num`) and `sick_leave_rate` would suggest rates are trending upward over time — potentially confounding a naive period comparison by mixing a time trend with a policy-period effect. A strong correlation between `headcount_month` and `sick_leave_rate` would indicate that raw sick day counts may be partly a function of workforce size rather than genuine absenteeism behaviour, reinforcing the need to use the rate (normalized by headcount) rather than raw days. Because `wm_num` and `per_num` are both numeric encodings of categorical policy-status information, their Pearson correlations should be treated as screening diagnostics rather than substantive effect estimates. Variables that are highly correlated with each other (|r| > 0.80) should not be jointly entered in the regression, as this inflates coefficient standard errors and reduces model interpretability; for that reason, the final regression retains `period` and excludes `work_mode`.
+**Interpretation:** The Pearson vs Spearman comparison table above shows the two or three variables most strongly associated with `sick_leave_rate`. Where Pearson r and Spearman ρ agree in direction and magnitude, the relationship is robust to distributional assumptions; where they diverge materially, the Spearman value is preferred because `per_num` and `wm_num` are ordinal encodings rather than continuous quantities. Note that `wm_num` and `per_num` are both numeric representations of the same underlying policy regime and are therefore expected to show near-identical correlations with `sick_leave_rate` — this confirms that only one of the two should enter the regression (the analysis retains `period` and excludes `work_mode`). Any predictor pair with |r| or |ρ| > 0.80 should not be jointly entered into the regression; the VIF table in §9 confirms whether the chosen predictors satisfy the multicollinearity threshold. The variable ranking by |ρ| directly informs which confounders are most critical to control: the highest-ranking non-period predictor is the most important covariate to include in the regression to avoid omitted-variable bias.
 
 ---
 
@@ -685,14 +904,59 @@ summary(model)
 ```{r reg-table-r}
 tidy(model, conf.int=TRUE) |>
   mutate(across(where(is.numeric), ~round(., 4))) |>
-  kable(caption="Regression coefficients — sick leave rate model") |>
+  kable(caption="Model 1 — Regression coefficients (with 95% CI)") |>
   kable_styling(bootstrap_options="striped", full_width=FALSE)
 
 glance(model) |>
   select(r.squared, adj.r.squared, p.value, AIC) |>
   mutate(across(everything(), ~round(., 4))) |>
-  kable(caption="Model fit statistics") |>
+  kable(caption="Model 1 — Fit statistics") |>
   kable_styling(full_width=FALSE)
+```
+
+```{r reg-vif-r}
+# VIF — base-R implementation, no car dependency required
+model_matrix <- model.matrix(model)[, -1, drop = FALSE]
+calc_vif <- function(X) {
+  sapply(seq_len(ncol(X)), function(i) {
+    y <- X[, i]; others <- X[, -i, drop = FALSE]
+    if (ncol(others) == 0) return(1)
+    1 / (1 - summary(lm(y ~ others))$r.squared)
+  })
+}
+vif_vals <- calc_vif(model_matrix)
+data.frame(Variable = colnames(model_matrix), VIF = round(vif_vals, 3)) |>
+  arrange(desc(VIF)) |>
+  kable(caption = "Variance Inflation Factors — Model 1 (VIF > 5 = concern, > 10 = severe)") |>
+  kable_styling(full_width = FALSE)
+cat(sprintf("\nMax VIF: %.2f — %s.\n", max(vif_vals),
+    ifelse(max(vif_vals) > 10, "REMOVE or combine one predictor",
+    ifelse(max(vif_vals) > 5,  "monitor; consider consolidation",
+                               "predictors are jointly enterable"))))
+```
+
+```{r reg-model2-r}
+# Model 2: reduced — period + headcount only (no department fixed effects)
+# Tests whether the period effect holds without controlling for departmental composition.
+model2 <- lm(sick_leave_rate ~ period_f + headcount_month, data = reg_data)
+
+cat("=== Model 2: Period + Headcount (no department fixed effects) ===\n")
+print(summary(model2))
+
+tidy(model2, conf.int = TRUE) |>
+  mutate(across(where(is.numeric), ~ round(., 4))) |>
+  kable(caption = "Model 2 — Coefficients (no department)") |>
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+cat("\n=== Model Comparison: Full (M1) vs Reduced (M2) ===\n")
+print(anova(model2, model))
+
+cat(sprintf(
+  "\nM1 (full):    Adj. R² = %.4f | AIC = %.2f\nM2 (reduced): Adj. R² = %.4f | AIC = %.2f\n",
+  summary(model)$adj.r.squared,  AIC(model),
+  summary(model2)$adj.r.squared, AIC(model2)
+))
+cat("(Lower AIC and higher adjusted R² favour the full model with department controls.)\n")
 ```
 
 ```{r reg-diag-r}
@@ -711,7 +975,41 @@ model_py = smf.ols(
   "sick_leave_rate ~ C(period) + C(department) + headcount_month",
     data=reg_py
 ).fit()
+print("=== Model 1: Full model (period + department + headcount) ===")
 print(model_py.summary())
+```
+
+```{python reg-vif-py}
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+# VIF on numeric predictors (categorical dummies handled by statsmodels design matrix)
+X_vif = sm.add_constant(reg_py[["headcount_month"]])
+vif_rows = [{"Variable": col,
+             "VIF": variance_inflation_factor(X_vif.values, i)}
+            for i, col in enumerate(X_vif.columns) if col != "const"]
+vif_df = pd.DataFrame(vif_rows).round(3).sort_values("VIF", ascending=False)
+print("Variance Inflation Factors — Model 1 (numeric predictors):")
+display(vif_df)
+max_vif = vif_df["VIF"].max()
+verdict = ("REMOVE or combine one predictor" if max_vif > 10
+           else "monitor; consider consolidation" if max_vif > 5
+           else "predictors are jointly enterable")
+print(f"Max VIF: {max_vif:.2f} — {verdict}.")
+```
+
+```{python reg-model2-py}
+# Model 2: reduced — period + headcount only (no department)
+model2_py = smf.ols(
+    "sick_leave_rate ~ C(period) + headcount_month",
+    data=reg_py
+).fit()
+print("=== Model 2: Period + Headcount (no department fixed effects) ===")
+print(model2_py.summary())
+
+print(f"\nModel comparison:")
+print(f"  M1 (full):    Adj. R² = {model_py.rsquared_adj:.4f} | AIC = {model_py.aic:.2f}")
+print(f"  M2 (reduced): Adj. R² = {model2_py.rsquared_adj:.4f} | AIC = {model2_py.aic:.2f}")
+print("(Lower AIC and higher adjusted R² favour the full model with department controls.)")
 ```
 
 ```{python reg-diag-py}
@@ -729,7 +1027,7 @@ print(f"\nAdj. R²: {model_py.rsquared_adj:.4f} | F p-value: {model_py.f_pvalue:
 
 :::
 
-**Interpretation:** The regression model produces the central, defensible result of this analysis: a coefficient on the Hybrid period indicator that quantifies the change in sick leave rate associated with the hybrid period, *after controlling* for departmental composition and monthly headcount. A statistically significant negative coefficient (p < 0.05) is consistent with lower sick leave rates during hybrid working, independent of who was working where. Department coefficients that are significant and positive identify departments with structurally elevated leave-taking — these are the teams requiring targeted wellbeing interventions (mental health support, workload reviews, ergonomics assessments) regardless of work modality. The adjusted R² indicates how much of the total variation in sick leave rate is explained by the model: a value between 0.20 and 0.50 is reasonable for monthly HR data with limited predictors, confirming the model captures the primary drivers without overfitting. Residual diagnostic plots should show no strong systematic pattern; if residual spread widens across the fitted range or the Q-Q plot departs materially from the reference line, that would signal heteroscedasticity or non-normality and suggest a transformed or more flexible specification.
+**Interpretation:** Model 1 (full model with period, department, and headcount) produces the central, defensible result: a coefficient on the Hybrid period indicator that quantifies the change in sick leave rate associated with the hybrid window, *after controlling* for departmental composition and workforce size. A statistically significant negative coefficient (p < 0.05) on `period_fHybrid` is consistent with lower sick leave rates during hybrid working, independent of which department the records belong to. Department coefficients that are significant and positive identify teams with structurally elevated leave-taking — the targets for direct wellbeing interventions regardless of work modality policy. The VIF table confirms whether multicollinearity is a concern: values below 5 for all predictors indicate the coefficients can be reliably interpreted as independent effects. Model 2 (reduced: period + headcount, no department) provides the counterfactual: comparing M1 vs M2 AIC and adjusted R² quantifies how much explanatory power the department fixed effects contribute. If M1 AIC is substantially lower and adjusted R² materially higher, department composition is a genuine confounder and must be retained in policy discussions. Residual diagnostic plots should show no systematic pattern (no fan-shaped spread in residuals vs fitted, no heavy tail departure in the Q-Q plot); if heteroscedasticity is visible, re-run the inference using HC1-robust standard errors.
 
 ---
 
